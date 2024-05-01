@@ -1,4 +1,5 @@
 import numpy as np
+from random import shuffle
 from scipy.sparse import csr_matrix
 from operator import itemgetter
 
@@ -32,12 +33,13 @@ def split_validation(train_set, valid_portion):
 
 class Data():
     def __init__(self, data, shuffle=False, n_node=None):
-        self.raw = np.asarray(data[0])
+        self.raw = data[0]
         H_T = data_masks(self.raw, n_node)
         BH_T = H_T.T.multiply(1.0/H_T.sum(axis=1).reshape(1, -1))
         BH_T = BH_T.T
         H = H_T.T
-        DH = H.T.multiply(1.0/H.sum(axis=1).reshape(1, -1))
+        epsilon = 1e-10
+        DH = H.T.multiply(1.0/(H.sum(axis=1).reshape(1, -1) + epsilon))
         DH = DH.T
         DHBH_T = np.dot(DH,BH_T)
 
@@ -66,10 +68,10 @@ class Data():
 
     def generate_batch(self, batch_size):
         if self.shuffle:
-            shuffled_arg = np.arange(self.length)
-            np.random.shuffle(shuffled_arg)
-            self.raw = self.raw[shuffled_arg]
-            self.targets = self.targets[shuffled_arg]
+            shuffled_arg = list(range(self.length))
+            shuffle(shuffled_arg)
+            self.raw = [self.raw[i] for i in shuffled_arg]
+            self.targets = np.array([self.targets[i] for i in shuffled_arg])
         n_batch = int(self.length / batch_size)
         if self.length % batch_size != 0:
             n_batch += 1
@@ -79,7 +81,7 @@ class Data():
 
     def get_slice(self, index):
         items, num_node = [], []
-        inp = self.raw[index]
+        inp = [self.raw[i] for i in index]
         for session in inp:
             num_node.append(len(np.nonzero(session)[0]))
         max_n_node = np.max(num_node)
@@ -93,5 +95,4 @@ class Data():
             mask.append([1]*len(nonzero_elems) + (max_n_node - len(nonzero_elems)) * [0])
             reversed_sess_item.append(list(reversed(session)) + (max_n_node - len(nonzero_elems)) * [0])
 
-
-        return self.targets[index]-1, session_len,items, reversed_sess_item, mask
+        return self.targets[index] - 1, session_len,items, reversed_sess_item, mask

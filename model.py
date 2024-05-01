@@ -10,6 +10,7 @@ from scipy.sparse import coo
 import time
 from numba import jit
 import heapq
+from tqdm import tqdm
 
 def trans_to_cuda(variable):
     if torch.cuda.is_available():
@@ -36,9 +37,9 @@ class HyperConv(Module):
         for i in range(self.layers):
             item_embeddings = torch.sparse.mm(trans_to_cuda(adjacency), item_embeddings)
             final.append(item_embeddings)
-      #  final1 = trans_to_cuda(torch.tensor([item.cpu().detach().numpy() for item in final]))
-      #  item_embeddings = torch.sum(final1, 0)
-        item_embeddings = np.sum(final, 0) / (self.layers+1)
+        final1 = trans_to_cuda(torch.stack(final))
+        item_embeddings = torch.sum(final1, 0)
+        # item_embeddings = torch.sum(final, 0) / (self.layers+1)
         return item_embeddings
 
 
@@ -49,8 +50,8 @@ class LineConv(Module):
         self.batch_size = batch_size
         self.layers = layers
     def forward(self, item_embedding, D, A, session_item, session_len):
-        zeros = torch.cuda.FloatTensor(1,self.emb_size).fill_(0)
-        # zeros = torch.zeros([1,self.emb_size])
+        # zeros = torch.cuda.FloatTensor(1,self.emb_size).fill_(0)
+        zeros = torch.zeros([1,self.emb_size], device='cuda')
         item_embedding = torch.cat([zeros, item_embedding], 0)
         seq_h = []
         for i in torch.arange(len(session_item)):
@@ -62,9 +63,9 @@ class LineConv(Module):
         for i in range(self.layers):
             session_emb_lgcn = torch.mm(DA, session_emb_lgcn)
             session.append(session_emb_lgcn)
-        #session1 = trans_to_cuda(torch.tensor([item.cpu().detach().numpy() for item in session]))
-        #session_emb_lgcn = torch.sum(session1, 0)
-        session_emb_lgcn = np.sum(session, 0)/ (self.layers+1)
+        session1 = trans_to_cuda(torch.stack(session))
+        session_emb_lgcn = torch.sum(session1, 0)
+        # session_emb_lgcn = np.sum(session, 0)/ (self.layers+1)
         return session_emb_lgcn
 
 
@@ -112,12 +113,12 @@ class DHCN(Module):
 
      
     def generate_sess_emb(self,item_embedding, session_item, session_len, reversed_sess_item, mask):
-        zeros = torch.cuda.FloatTensor(1, self.emb_size).fill_(0)
-        # zeros = torch.zeros(1, self.emb_size)
+        # zeros = torch.cuda.FloatTensor(1, self.emb_size).fill_(0)
+        zeros = torch.zeros([1,self.emb_size], device='cuda')
         item_embedding = torch.cat([zeros, item_embedding], 0)
         get = lambda i: item_embedding[reversed_sess_item[i]]
-        seq_h = torch.cuda.FloatTensor(self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size).fill_(0)
-        # seq_h = torch.zeros(self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size)
+        # seq_h = torch.cuda.FloatTensor(self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size).fill_(0)
+        seq_h = torch.zeros([self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size], device='cuda')
         for i in torch.arange(session_item.shape[0]):
             seq_h[i] = get(i)
         hs = torch.div(torch.sum(seq_h, 1), session_len)
@@ -136,12 +137,12 @@ class DHCN(Module):
         return select
 
     def generate_sess_emb_npos(self,item_embedding, session_item, session_len, reversed_sess_item, mask):
-        zeros = torch.cuda.FloatTensor(1, self.emb_size).fill_(0)
-        # zeros = torch.zeros(1, self.emb_size)
+        # zeros = torch.cuda.FloatTensor(1, self.emb_size).fill_(0)
+        zeros = torch.zeros([1, self.emb_size], device='cuda')
         item_embedding = torch.cat([zeros, item_embedding], 0)
         get = lambda i: item_embedding[reversed_sess_item[i]]
-        seq_h = torch.cuda.FloatTensor(self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size).fill_(0)
-        # seq_h = torch.zeros(self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size)
+        # seq_h = torch.cuda.FloatTensor(self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size).fill_(0)
+        seq_h = torch.zeros([self.batch_size, list(reversed_sess_item.shape)[1], self.emb_size], device='cuda')
         for i in torch.arange(session_item.shape[0]):
             seq_h[i] = get(i)
         hs = torch.div(torch.sum(seq_h, 1), session_len)
@@ -172,8 +173,8 @@ class DHCN(Module):
 
         pos = score(sess_emb_hgnn, sess_emb_lgcn)
         neg1 = score(sess_emb_lgcn, row_column_shuffle(sess_emb_hgnn))
-        one = torch.cuda.FloatTensor(neg1.shape[0]).fill_(1)
-        # one = zeros = torch.ones(neg1.shape[0])
+        # one = torch.cuda.FloatTensor(neg1.shape[0]).fill_(1)
+        one = zeros = torch.ones(neg1.shape[0], device='cuda')
         con_loss = torch.sum(-torch.log(1e-8 + torch.sigmoid(pos))-torch.log(1e-8 + (one - torch.sigmoid(neg1))))
         return con_loss
 
@@ -222,7 +223,7 @@ def train_test(model, train_data, test_data):
     torch.autograd.set_detect_anomaly(True)
     total_loss = 0.0
     slices = train_data.generate_batch(model.batch_size)
-    for i in slices:
+    for i in tqdm(slices):
         model.zero_grad()
         targets, scores, con_loss = forward(model, i, train_data)
         loss = model.loss_function(scores + 1e-8, targets)
